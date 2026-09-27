@@ -1,0 +1,156 @@
+name: joggle
+description: Cross-file judgements for a TypeScript codebase, enforced like a linter.
+author: autotelic
+
+branding:
+  icon: search
+  color: purple
+
+inputs:
+  version:
+    description: The @autotelic/joggle version to run.
+    required: false
+    default: latest
+
+  api-key:
+    description: TypeSafe API key. Omit to run the deterministic rules only; judged rules then report as skipped.
+    required: false
+
+  scope:
+    description: 'What to check: "auto" (default), "pr", "changed", "since", or "all".'
+    required: false
+    default: auto
+
+  since:
+    description: Git revision to scope against when scope is "since".
+    required: false
+    default: origin/main
+
+  paths:
+    description: Files or directories to analyse. The default is whatever tsgo lists.
+    required: false
+
+  rules:
+    description: Only run these rule ids, comma-separated.
+    required: false
+
+  baseline:
+    description: Report only findings that are not already accepted in this baseline file.
+    required: false
+
+  typecheck:
+    description: Carry tsgo's own diagnostics as joggle/typecheck findings.
+    required: false
+    default: "false"
+
+  types:
+    description: Resolve declaration types through tsgo's trace. Enables the type-aware rules.
+    required: false
+    default: "false"
+
+  no-tsgo:
+    description: Never invoke tsgo; walk the paths on disk instead. Use when the project has no TypeScript native preview binary.
+    required: false
+    default: "false"
+
+  max-warnings:
+    description: Fail when warnings exceed this number (-1 disables).
+    required: false
+    default: "-1"
+
+  offline:
+    description: Answer only from the committed verdict cache; never call the model.
+    required: false
+    default: "false"
+
+  working-directory:
+    description: Directory to run in.
+    required: false
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: Check for npx
+      shell: bash
+      run: |
+        if ! command -v npx >/dev/null 2>&1; then
+          echo "::error title=Node.js not found::npx could not be found. Add actions/setup-node before this action."
+          exit 1
+        fi
+
+    - name: Make the fork point available
+      if: ${{ inputs.scope == 'pr' || inputs.scope == 'since' || (inputs.scope == 'auto' && github.event_name == 'pull_request') }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        if [ -f "$(git rev-parse --git-dir)/shallow" ]; then
+          echo "::debug::Shallow clone. Fetching the full history so git merge-base can find the fork point."
+          git fetch --unshallow --quiet || git fetch --depth=2147483647 --quiet
+        fi
+        git fetch --quiet origin || true
+
+    - name: joggle check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TYPESAFE_API_KEY: ${{ inputs.api-key }}
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        EVENT_NAME: ${{ github.event_name }}
+        IN_SCOPE: ${{ inputs.scope }}
+        IN_SINCE: ${{ inputs.since }}
+        IN_PATHS: ${{ inputs.paths }}
+        IN_RULES: ${{ inputs.rules }}
+        IN_BASELINE: ${{ inputs.baseline }}
+        IN_TYPECHECK: ${{ inputs.typecheck }}
+        IN_TYPES: ${{ inputs.types }}
+        IN_NO_TSGO: ${{ inputs.no-tsgo }}
+        IN_MAX: ${{ inputs.max-warnings }}
+        IN_OFFLINE: ${{ inputs.offline }}
+        IN_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        scope="$IN_SCOPE"
+        if [ "$scope" = auto ]; then
+          if [ "$EVENT_NAME" = pull_request ]; then scope=pr; else scope=all; fi
+        fi
+
+        args=(check)
+        if [ -n "${IN_PATHS:-}" ]; then
+          read -r -a listed <<< "$IN_PATHS"
+          args+=("${listed[@]}")
+        fi
+        args+=(--format github)
+
+        case "$scope" in
+          pr)
+            if [ -n "${PR_NUMBER:-}" ]; then
+              args+=(--pr-number "$PR_NUMBER")
+            else
+              args+=(--pr)
+            fi
+            ;;
+          changed) args+=(--changed) ;;
+          since) args+=(--since "$IN_SINCE") ;;
+          all) ;;
+          *)
+            echo "::error title=joggle::unknown scope '$IN_SCOPE' (expected auto, pr, changed, since, or all)"
+            exit 1
+            ;;
+        esac
+
+        if [ -n "${IN_RULES:-}" ]; then args+=(--rule "$IN_RULES"); fi
+        if [ -n "${IN_BASELINE:-}" ]; then args+=(--baseline "$IN_BASELINE"); fi
+        if [ "$IN_TYPECHECK" = true ]; then args+=(--typecheck); fi
+        if [ "$IN_TYPES" = true ]; then args+=(--types); fi
+        if [ "$IN_NO_TSGO" = true ]; then args+=(--no-tsgo); fi
+        if [ "$IN_OFFLINE" = true ]; then args+=(--offline); fi
+        args+=(--max-warnings "$IN_MAX")
+
+        echo "::group::joggle check"
+        echo "npx --yes @autotelic/joggle@$IN_VERSION ${args[*]}"
+        npx --yes "@autotelic/joggle@${IN_VERSION}" "${args[@]}"
+        echo "::endgroup::"

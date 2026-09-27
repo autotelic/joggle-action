@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  lint:
+    name: Lint the action
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: -color
+
+  self-test:
+    name: Run the action on the fixture
+    # The fixture run needs @autotelic/joggle on npm. Set the repository variable
+    # JOGGLE_PUBLISHED to true after the first release to switch this job on.
+    if: vars.JOGGLE_PUBLISHED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: ./
+        with:
+          scope: all
+          paths: fixture
+          no-tsgo: "true"
+          offline: "true"
